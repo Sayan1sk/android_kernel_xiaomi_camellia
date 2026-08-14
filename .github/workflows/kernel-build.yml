@@ -12,11 +12,19 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
+      # ==========================================
+      # SOURCE
+      # ==========================================
+
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: true
+
+      # ==========================================
+      # DEPENDENCIES
+      # ==========================================
 
       - name: Install dependencies
         run: |
@@ -27,7 +35,6 @@ jobs:
             bison \
             build-essential \
             ccache \
-            clang \
             curl \
             device-tree-compiler \
             flex \
@@ -43,15 +50,17 @@ jobs:
             xz-utils \
             zip
 
-      # -------------------------------------------------------
-      # Android Clang r383902
-      # -------------------------------------------------------
+      # ==========================================
+      # ANDROID CLANG R383902
+      # ==========================================
+
       - name: Download Android Clang r383902
         run: |
           mkdir -p "$HOME/toolchains"
 
-          git clone --depth=1 \
-            --branch android-11.0.0_r3 \
+          git clone \
+            --depth=1 \
+            --branch android-12.0.0_r24 \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             "$HOME/toolchains/clang-source"
 
@@ -61,16 +70,43 @@ jobs:
             "$HOME/toolchains/clang-source/clang-r383902/." \
             "$HOME/toolchains/clang/"
 
-      # -------------------------------------------------------
-      # Android GCC 4.9
-      # -------------------------------------------------------
+          echo "========== CLANG =========="
+          "$HOME/toolchains/clang/bin/clang" --version
+
+      # ==========================================
+      # ANDROID GCC 4.9
+      # ==========================================
+
       - name: Download Android GCC 4.9
         run: |
-          git clone --depth=1 \
+          mkdir -p "$HOME/toolchains"
+
+          git clone \
+            --depth=1 \
+            --branch android-7.1.2_r3 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
             "$HOME/toolchains/gcc"
 
-      - name: Setup toolchain environment
+          echo "========== GCC BINARIES =========="
+          ls -lah "$HOME/toolchains/gcc/bin"
+
+          echo
+          echo "========== GCC =========="
+
+          "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-gcc" \
+            --version
+
+          echo
+          echo "========== GCC AS =========="
+
+          "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-as" \
+            --version
+
+      # ==========================================
+      # TOOLCHAIN PATH
+      # ==========================================
+
+      - name: Setup toolchain
         run: |
           echo "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
           echo "$HOME/toolchains/gcc/bin" >> "$GITHUB_PATH"
@@ -78,27 +114,20 @@ jobs:
           echo "CLANG_PREBUILT_BIN=$HOME/toolchains/clang/bin" >> "$GITHUB_ENV"
           echo "GCC_PREBUILT_BIN=$HOME/toolchains/gcc/bin" >> "$GITHUB_ENV"
 
-      - name: Check toolchains
-        run: |
-          echo "========== CLANG =========="
-          "$HOME/toolchains/clang/bin/clang" --version
+      # ==========================================
+      # KERNELSU NEXT
+      # ==========================================
 
-          echo
-          echo "========== GCC =========="
-          "$HOME/toolchains/gcc/bin/aarch64-linux-android-gcc" --version
-
-      # -------------------------------------------------------
-      # KernelSU Next
-      # -------------------------------------------------------
       - name: Integrate KernelSU Next
         run: |
           curl -LSs \
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
             | bash -s legacy
 
-      # -------------------------------------------------------
-      # Configure kernel
-      # -------------------------------------------------------
+      # ==========================================
+      # KERNEL CONFIG
+      # ==========================================
+
       - name: Configure kernel
         run: |
           export ARCH=arm64
@@ -106,8 +135,7 @@ jobs:
 
           make O=out ARCH=arm64 camellian_defconfig
 
-          echo
-          echo "========== KERNELSU =========="
+          echo "========== ENABLE KERNELSU =========="
 
           ./scripts/config --file out/.config \
             -e CONFIG_KSU \
@@ -117,29 +145,33 @@ jobs:
 
           make O=out ARCH=arm64 olddefconfig
 
+          echo
+          echo "========== KERNELSU CONFIG =========="
+
           grep -E \
             'CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_KPROBE_EVENTS=|CONFIG_KSU_KPROBE_HOOKS=' \
             out/.config || true
 
-      # -------------------------------------------------------
-      # Disable broken external Xiaomi MIHW module
-      #
-      # The source tree references:
-      # vendor/xiaomi/kernel_modules/mihw/millet
-      #
-      # This directory is not present in the repository checkout.
-      # We disable the corresponding module if it exists.
-      # -------------------------------------------------------
-      - name: Check Xiaomi MIHW module
+      # ==========================================
+      # CHECK EXTERNAL XIAOMI MODULE
+      # ==========================================
+
+      - name: Check Xiaomi MIHW source
         run: |
-          echo "Checking Xiaomi MIHW sources..."
+          echo "========== CHECKING MIHW =========="
 
           if [ -d "vendor/xiaomi/kernel_modules/mihw/millet" ]; then
-            echo "MIHW millet source exists."
+            echo "MIHW millet source FOUND."
+            find vendor/xiaomi/kernel_modules/mihw/millet \
+              -maxdepth 2 \
+              -type f | head -50
           else
-            echo "MIHW millet source is missing."
-            echo "The kernel Makefile references an unavailable external module."
+            echo "WARNING:"
+            echo "vendor/xiaomi/kernel_modules/mihw/millet"
+            echo "is NOT present in this repository."
 
+            echo
+            echo "References to millet:"
             grep -Rni \
               "kernel_modules/mihw/millet" \
               --include="Makefile" \
@@ -147,32 +179,59 @@ jobs:
               . || true
           fi
 
-      # -------------------------------------------------------
-      # Build
-      # -------------------------------------------------------
+      # ==========================================
+      # BUILD
+      # ==========================================
+
       - name: Build kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
 
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-
-          export CROSS_COMPILE="$HOME/toolchains/gcc/bin/aarch64-linux-android-"
-
-          export CC="$HOME/toolchains/clang/bin/clang"
-          export LD="$HOME/toolchains/clang/bin/ld.lld"
-          export AR="$HOME/toolchains/clang/bin/llvm-ar"
-          export NM="$HOME/toolchains/clang/bin/llvm-nm"
-          export OBJCOPY="$HOME/toolchains/clang/bin/llvm-objcopy"
-          export OBJDUMP="$HOME/toolchains/clang/bin/llvm-objdump"
-          export STRIP="$HOME/toolchains/clang/bin/llvm-strip"
-          export READELF="$HOME/toolchains/clang/bin/llvm-readelf"
-          export HOSTCC="$HOME/toolchains/clang/bin/clang"
-          export HOSTCXX="$HOME/toolchains/clang/bin/clang++"
-
           export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
 
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          export CROSS_COMPILE=aarch64-linux-androidkernel-
+
+          export CC=clang
+          export LD=ld.lld
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+
+          export CLANG_PREBUILT_BIN="$HOME/toolchains/clang/bin"
+          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$HOME/toolchains/gcc/bin"
+
           export LD_LIBRARY_PATH="$HOME/toolchains/clang/lib64:$LD_LIBRARY_PATH"
+
+          echo "========== BUILD ENVIRONMENT =========="
+
+          echo "ARCH=$ARCH"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "CLANG_TRIPLE=$CLANG_TRIPLE"
+          echo "CC=$CC"
+          echo "LD=$LD"
+
+          echo
+          echo "========== COMPILER =========="
+
+          which clang
+          clang --version
+
+          echo
+          echo "========== CROSS GCC =========="
+
+          which aarch64-linux-androidkernel-gcc
+          aarch64-linux-androidkernel-gcc --version
+
+          echo
+          echo "========== CROSS AS =========="
+
+          which aarch64-linux-androidkernel-as
+          aarch64-linux-androidkernel-as --version
+
+          echo
+          echo "========== START BUILD =========="
 
           make -j"$(nproc)" \
             O=out \
@@ -182,23 +241,25 @@ jobs:
             CLANG_TRIPLE="$CLANG_TRIPLE" \
             CC="$CC" \
             LD="$LD" \
-            AR="$AR" \
             NM="$NM" \
-            OBJCOPY="$OBJCOPY" \
-            HOSTCC="$HOSTCC" \
-            HOSTCXX="$HOSTCXX"
+            OBJCOPY="$OBJCOPY"
 
-      # -------------------------------------------------------
-      # Verify output
-      # -------------------------------------------------------
+      # ==========================================
+      # CHECK OUTPUT
+      # ==========================================
+
       - name: Check kernel output
         if: success()
         run: |
-          echo "========== BOOT DIRECTORY =========="
-          find out/arch/arm64/boot -maxdepth 3 -type f -print | sort
+          echo "========== KERNEL OUTPUT =========="
+
+          find out/arch/arm64/boot \
+            -maxdepth 3 \
+            -type f \
+            -print | sort
 
           echo
-          echo "========== KERNEL IMAGE =========="
+          echo "========== IMAGE =========="
 
           ls -lh \
             out/arch/arm64/boot/Image \
@@ -206,34 +267,41 @@ jobs:
             out/arch/arm64/boot/Image.gz-dtb \
             2>/dev/null || true
 
-      # -------------------------------------------------------
-      # Prepare artifact
-      # -------------------------------------------------------
-      - name: Prepare artifact
+      # ==========================================
+      # PREPARE ARTIFACT
+      # ==========================================
+
+      - name: Prepare kernel artifact
         if: success()
         run: |
           mkdir -p release
 
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb release/
+            cp out/arch/arm64/boot/Image.gz-dtb \
+              release/Image.gz-dtb
           fi
 
           if [ -f out/arch/arm64/boot/Image.gz ]; then
-            cp out/arch/arm64/boot/Image.gz release/
+            cp out/arch/arm64/boot/Image.gz \
+              release/Image.gz
           fi
 
           if [ -f out/arch/arm64/boot/Image ]; then
-            cp out/arch/arm64/boot/Image release/
+            cp out/arch/arm64/boot/Image \
+              release/Image
           fi
 
           cp out/.config release/kernel.config
 
+          echo
           echo "========== ARTIFACT =========="
-          ls -lh release/
 
-      # -------------------------------------------------------
-      # Upload
-      # -------------------------------------------------------
+          ls -lah release/
+
+      # ==========================================
+      # UPLOAD
+      # ==========================================
+
       - name: Upload KernelSU kernel
         if: success()
         uses: actions/upload-artifact@v4
