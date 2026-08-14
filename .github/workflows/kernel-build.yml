@@ -1,0 +1,157 @@
+name: Camellia KernelSU Next
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lineage-23.2
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            lld \
+            make \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            zip
+
+      # Android Clang r383902
+      - name: Download Clang r383902
+        run: |
+          mkdir -p "$HOME/toolchains/clang"
+
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r383902.tar.gz" \
+            -O /tmp/clang.tar.gz
+
+          tar -xzf /tmp/clang.tar.gz \
+            -C "$HOME/toolchains/clang"
+
+      # Android GCC 4.9
+      - name: Download Android GCC 4.9
+        run: |
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            "$HOME/toolchains/gcc"
+
+      - name: Add toolchains to PATH
+        run: |
+          echo "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
+          echo "$HOME/toolchains/gcc/bin" >> "$GITHUB_PATH"
+
+      # KernelSU Next Legacy integration
+      - name: Integrate KernelSU Next
+        run: |
+          curl -LSs \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s legacy
+
+      - name: Configure kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          make O=out ARCH=arm64 camellian_defconfig
+
+          ./scripts/config --file out/.config \
+            -e CONFIG_KSU \
+            -e CONFIG_KPROBES \
+            -e CONFIG_KPROBE_EVENTS \
+            -e CONFIG_KSU_KPROBE_HOOKS
+
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "KernelSU configuration:"
+          grep -E \
+            'CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_KPROBE_EVENTS=|CONFIG_KSU_KPROBE_HOOKS=' \
+            out/.config || true
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export CROSS_COMPILE="$HOME/toolchains/gcc/bin/aarch64-linux-android-"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          export CC=clang
+          export LD=ld.lld
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+
+          export LD_LIBRARY_PATH="$HOME/toolchains/clang/lib64:$LD_LIBRARY_PATH"
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CLANG_TRIPLE="$CLANG_TRIPLE" \
+            CC="$CC" \
+            LD="$LD" \
+            NM="$NM" \
+            OBJCOPY="$OBJCOPY"
+
+      - name: Check kernel output
+        run: |
+          echo "========== KERNEL OUTPUT =========="
+          find out/arch/arm64/boot -maxdepth 3 -type f -print | sort
+
+          echo
+          echo "========== KERNEL IMAGE =========="
+          ls -lh out/arch/arm64/boot/Image* || true
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p release
+
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb \
+              release/Image.gz-dtb
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz \
+              release/Image.gz
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image \
+              release/Image
+          else
+            echo "ERROR: No kernel image found!"
+            exit 1
+          fi
+
+          cp out/.config release/kernel.config
+
+          echo "KernelSU:"
+          grep CONFIG_KSU release/kernel.config || true
+
+          echo "Files:"
+          ls -lh release/
+
+      - name: Upload KernelSU kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camellia-KernelSU-Next
+          path: release/
