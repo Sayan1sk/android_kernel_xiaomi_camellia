@@ -58,58 +58,60 @@ on:
 
 jobs:
   build:
-    name: Build Camellia Kernel
-    runs-on: ubuntu-22.04
-
-    steps:
-
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
-
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-
-
-      # ============================================================
-      # SHOW CONFIGURATION
-      # ============================================================
-
-      - name: Show configuration
+          - name: Build kernel
         run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export CLANG="$HOME/toolchains/clang/bin"
+          export GCC="$HOME/toolchains/gcc/bin"
+
+          export PATH="$CLANG:$GCC:$PATH"
+
+          export CROSS_COMPILE="$GCC/aarch64-linux-androidkernel-"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          export CC="$CLANG/clang"
+          export LD="$CLANG/ld.lld"
+          export AR="$CLANG/llvm-ar"
+          export NM="$CLANG/llvm-nm"
+          export OBJCOPY="$CLANG/llvm-objcopy"
+          export OBJDUMP="$CLANG/llvm-objdump"
+          export STRIP="$CLANG/llvm-strip"
+
           echo "=========================================="
-          echo "       CAMELLIA KERNEL BUILD"
-          echo "=========================================="
-          echo "Build target : ${{ inputs.build_target }}"
-          echo "KernelSU     : ${{ inputs.ksu_fork }}"
-          echo "Manifest     : ${{ inputs.manifest_name }}"
-          echo "Toolchain    : ${{ inputs.toolchain }}"
+          echo "       BUILDING WITH CLANG IAS"
           echo "=========================================="
 
+          "$CC" --version
 
-      # ============================================================
-      # DEPENDENCIES
-      # ============================================================
+          echo
+          echo "Testing integrated assembler..."
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
+          echo 'mov x0, x0' | \
+            "$CC" \
+            --target=aarch64-linux-gnu \
+            -x assembler \
+            -c \
+            -o /tmp/test.o
 
-          sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            flex \
-            git \
-            libelf-dev \
-            libssl-dev \
-            lld \
-            python3 \
-            rsync \
-            unzip \
-            wget \
-            zip
+          echo "Integrated assembler: OK"
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CLANG_TRIPLE="$CLANG_TRIPLE" \
+            CC="$CC" \
+            LD="$LD" \
+            AR="$AR" \
+            NM="$NM" \
+            OBJCOPY="$OBJCOPY" \
+            OBJDUMP="$OBJDUMP" \
+            STRIP="$STRIP"
 
 
       # ============================================================
