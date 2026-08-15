@@ -128,12 +128,5 @@ jobs:
   # -------------------------------------------------------------------------
   # JOB 2: AUTOMATICALLY CALL LPUD WORKER
   # -------------------------------------------------------------------------
-  build-lpud-binary:
-    needs: build-kernel-and-manager
-    if: inputs.include_lpud == true && (inputs.ksu_fork == 'xxKSU' || inputs.ksu_fork == 'SUKISU')
-    uses: ./.github/workflows/build-lpud.yml
-    with:
-      ksu_fork: ${{ inputs.ksu_fork }}
-      target_arch: 'aarch64-linux-android'
-    secrets: inherit
+  
     
