@@ -395,16 +395,23 @@ jobs:
           "$CC" --version
 
           echo
-          echo "Testing Clang integrated assembler..."
+echo "Testing Clang integrated assembler..."
 
-          printf 'mov x0, x0\n' | \
-            "$CC" \
-            --target=aarch64-linux-gnu \
-            -x assembler \
-            -c \
-            -o /tmp/test.o
+cat > /tmp/test.S <<'EOF'
+.text
+.global test_function
+test_function:
+    mov x0, x0
+    ret
+EOF
 
-          echo "Integrated assembler: OK"
+"$CC" \
+  --target=aarch64-linux-gnu \
+  -c \
+  -o /tmp/test.o \
+  /tmp/test.S
+
+echo "Integrated assembler: OK"
 
           echo
           echo "=========================================="
