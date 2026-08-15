@@ -55,6 +55,7 @@ on:
         required: true
         type: boolean
 
+
 jobs:
   build:
     name: Build Camellia Kernel
@@ -62,17 +63,17 @@ jobs:
 
     steps:
 
-      # ==========================================================
+      # ============================================================
       # CHECKOUT
-      # ==========================================================
+      # ============================================================
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
 
-      # ==========================================================
-      # CONFIGURATION
-      # ==========================================================
+      # ============================================================
+      # SHOW CONFIGURATION
+      # ============================================================
 
       - name: Show configuration
         run: |
@@ -85,22 +86,12 @@ jobs:
           echo "Manifest     : ${{ inputs.manifest_name }}"
           echo "Toolchain    : ${{ inputs.toolchain }}"
 
-          echo "SUSFS        : ${{ inputs.include_susfs }}"
-          echo "DroidSpace   : ${{ inputs.include_droidspace }}"
-          echo "BBG          : ${{ inputs.include_bbg }}"
-          echo "LTO/O3       : ${{ inputs.include_lto_o3 }}"
-          echo "WireGuard    : ${{ inputs.include_wireguard }}"
-          echo "F2FS         : ${{ inputs.include_f2fs }}"
-          echo "ZSTD         : ${{ inputs.include_zstd }}"
-          echo "BBR          : ${{ inputs.include_bbr }}"
-          echo "TTL          : ${{ inputs.include_ttl }}"
-
           echo "=========================================="
 
 
-      # ==========================================================
+      # ============================================================
       # DEPENDENCIES
-      # ==========================================================
+      # ============================================================
 
       - name: Install dependencies
         run: |
@@ -123,9 +114,9 @@ jobs:
             zip
 
 
-      # ==========================================================
+      # ============================================================
       # ANDROID CLANG 11
-      # ==========================================================
+      # ============================================================
 
       - name: Download Android Clang 11
         run: |
@@ -148,9 +139,10 @@ jobs:
           "$HOME/toolchains/clang/bin/clang" --version
 
 
-      # ==========================================================
+      # ============================================================
       # ANDROID GCC 4.9
-      # ==========================================================
+      # TARGET CROSS COMPILER ONLY
+      # ============================================================
 
       - name: Download Android GCC 4.9
         run: |
@@ -160,71 +152,15 @@ jobs:
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
             "$HOME/toolchains/gcc"
 
-          echo "========== GCC =========="
+          echo "========== ANDROID GCC =========="
 
           "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-gcc" \
             --version
 
 
-      # ==========================================================
-      # TOOLCHAIN CHECK
-      # ==========================================================
-
-      - name: Verify toolchain
-        run: |
-          export CLANG="$HOME/toolchains/clang/bin"
-          export GCC="$HOME/toolchains/gcc/bin"
-
-          export PATH="$CLANG:$GCC:$PATH"
-
-          echo "=========================================="
-          echo "           TOOLCHAIN CHECK"
-          echo "=========================================="
-
-          echo
-          echo "========== CLANG =========="
-
-          which clang
-          clang --version
-
-          echo
-          echo "========== CLANG++ =========="
-
-          which clang++
-          clang++ --version
-
-          echo
-          echo "========== GCC CROSS =========="
-
-          which aarch64-linux-androidkernel-gcc
-          aarch64-linux-androidkernel-gcc --version
-
-          echo
-          echo "========== LLVM IAS TEST =========="
-
-          cat > /tmp/test.S <<'EOF'
-          .text
-          .global test_function
-
-          test_function:
-              mov x0, x0
-              ret
-          EOF
-
-          "$CLANG/clang" \
-            --target=aarch64-linux-gnu \
-            -c \
-            -o /tmp/test.o \
-            /tmp/test.S
-
-          test -f /tmp/test.o
-
-          echo "Clang integrated assembler: OK"
-
-
-      # ==========================================================
+      # ============================================================
       # KERNELSU NEXT
-      # ==========================================================
+      # ============================================================
 
       - name: Setup KernelSU Next
         if: inputs.ksu_fork == 'KSU-Next'
@@ -234,38 +170,23 @@ jobs:
             | bash -s legacy
 
 
-      # ==========================================================
+      # ============================================================
       # CONFIGURE CAMELLIA
-      # ==========================================================
+      # ============================================================
 
       - name: Configure Camellia
         run: |
-          export CLANG="$HOME/toolchains/clang/bin"
-          export GCC="$HOME/toolchains/gcc/bin"
-
-          export PATH="$CLANG:$GCC:$PATH"
-
-          echo "=========================================="
-          echo "       CONFIGURE CAMELLIA"
-          echo "=========================================="
+          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
 
           make O=out \
             ARCH=arm64 \
             camellian_defconfig
 
-          echo
-          echo "========== ENABLE KERNELSU =========="
-
           ./scripts/config --file out/.config \
             -e CONFIG_KSU \
             -e CONFIG_KPROBES \
             -e CONFIG_KPROBE_EVENTS \
-            -e CONFIG_KSU_KPROBE_HOOKS
-
-          echo
-          echo "========== DISABLE MILLET =========="
-
-          ./scripts/config --file out/.config \
+            -e CONFIG_KSU_KPROBE_HOOKS \
             -d CONFIG_MILLET
 
           make O=out \
@@ -278,43 +199,15 @@ jobs:
           grep CONFIG_KSU out/.config || true
 
           echo
-          echo "========== MILLET =========="
+          echo "========== KPROBES =========="
 
-          grep CONFIG_MILLET out/.config || true
-
-
-      # ==========================================================
-      # VDSO FIX
-      # ==========================================================
-
-      - name: Fix VDSO Clang compatibility
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("arch/arm64/kernel/vdso/gettimeofday.S")
-
-          text = path.read_text()
-
-          old = "clock_gettime_return, shift=1"
-          new = "clock_gettime_return shift=1"
-
-          count = text.count(old)
-
-          print("Found:", count, "VDSO occurrences")
-
-          if count:
-              text = text.replace(old, new)
-              path.write_text(text)
-              print("VDSO fix applied.")
-          else:
-              print("VDSO fix not required.")
-          PY
+          grep CONFIG_KPROBE out/.config || true
 
 
-      # ==========================================================
-      # AES FIX
-      # ==========================================================
+      # ============================================================
+      # FIX AES-MODES.S
+      # CLANG 11 COMPATIBILITY
+      # ============================================================
 
       - name: Fix AES Clang compatibility
         run: |
@@ -322,10 +215,16 @@ jobs:
           from pathlib import Path
 
           path = Path("arch/arm64/crypto/aes-modes.S")
-
-          lines = path.read_text().splitlines()
+          text = path.read_text()
 
           target = "0x30000000200000001"
+
+          if target not in text:
+              print("AES literal not found.")
+              print("No AES fix required.")
+              raise SystemExit(0)
+
+          lines = text.splitlines()
 
           start = None
           end = None
@@ -336,18 +235,18 @@ jobs:
                   break
 
           if start is None:
-              print("AES literal not found.")
-              print("AES fix is probably already applied.")
-              raise SystemExit(0)
+              raise SystemExit(
+                  "ERROR: AES literal could not be located."
+              )
 
-          for i in range(start, min(start + 20, len(lines))):
+          for i in range(start, min(start + 30, len(lines))):
               if "v3.s[3]" in lines[i]:
                   end = i
                   break
 
           if end is None:
               raise SystemExit(
-                  "ERROR: Could not locate AES block."
+                  "ERROR: Could not locate end of AES block."
               )
 
           replacement = [
@@ -363,7 +262,7 @@ jobs:
               "\trev\tw10, w10",
               "\tmov\tv1.s[3], w7",
               "\tmov\tv2.s[3], w9",
-              "\tmov\tv3.s[3], w10",
+              "\tmov\tv3.s[3], w10"
           ]
 
           lines[start:end + 1] = replacement
@@ -372,28 +271,82 @@ jobs:
               "\n".join(lines) + "\n"
           )
 
-          print("AES Clang fix applied.")
+          print("======================================")
+          print("AES Clang compatibility fix applied")
+          print("======================================")
           PY
 
           echo
-          echo "========== VERIFY AES =========="
+          echo "========== VERIFY AES FIX =========="
 
-          if grep -q "0x30000000200000001" \
+          if grep -q \
+            "0x30000000200000001" \
             arch/arm64/crypto/aes-modes.S
           then
-            echo "ERROR: Old AES literal still exists."
+            echo "ERROR: Old AES literal still exists!"
             exit 1
           fi
 
           echo "AES fix verified."
 
 
-      # ==========================================================
-      # BUILD KERNEL
-      # ==========================================================
+      # ============================================================
+      # FIX VDSO
+      # CLANG 11 COMPATIBILITY
+      # ============================================================
 
-      - name: Build kernel
+      - name: Fix VDSO Clang compatibility
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "arch/arm64/kernel/vdso/gettimeofday.S"
+          )
+
+          text = path.read_text()
+
+          old = "clock_gettime_return, shift=1"
+          new = "clock_gettime_return shift=1"
+
+          count = text.count(old)
+
+          if count == 0:
+              print("VDSO pattern not found.")
+              print("No VDSO fix required.")
+          else:
+              print(
+                  f"Found {count} VDSO incompatible macro calls."
+              )
+
+              text = text.replace(old, new)
+
+              path.write_text(text)
+
+              print("VDSO compatibility fix applied.")
+          PY
+
+          echo
+          echo "========== VERIFY VDSO =========="
+
+          if grep -n \
+            "clock_gettime_return, shift=1" \
+            arch/arm64/kernel/vdso/gettimeofday.S
+          then
+            echo "ERROR: Old VDSO syntax still exists!"
+            exit 1
+          fi
+
+          echo "VDSO fix verified."
+
+
+      # ============================================================
+      # TOOLCHAIN SETUP
+      # ============================================================
+
+      - name: Setup build toolchain
+        run: |
+
           export ARCH=arm64
           export SUBARCH=arm64
 
@@ -402,16 +355,19 @@ jobs:
 
           export PATH="$CLANG:$GCC:$PATH"
 
-          # ARM64 target cross compiler
+          # ========================================================
+          # ARM64 TARGET CROSS COMPILER
+          # ========================================================
+
           export CROSS_COMPILE="$GCC/aarch64-linux-androidkernel-"
 
-          # Clang target
+          # ========================================================
+          # CLANG TARGET
+          # ========================================================
+
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # Target compiler
           export CC="$CLANG/clang"
-
-          # Target linker/tools
           export LD="$CLANG/ld.lld"
           export AR="$CLANG/llvm-ar"
           export NM="$CLANG/llvm-nm"
@@ -419,23 +375,100 @@ jobs:
           export OBJDUMP="$CLANG/llvm-objdump"
           export STRIP="$CLANG/llvm-strip"
 
-          # IMPORTANT:
-          # Host tools must NOT use Android GCC 4.9.
-          export HOSTCC="$CLANG/clang"
-          export HOSTCXX="$CLANG/clang++"
-          export HOSTLD="$CLANG/ld.lld"
+          # ========================================================
+          # IMPORTANT
+          #
+          # HOST tools use Ubuntu GCC.
+          #
+          # DO NOT use Android GCC 4.9 as HOSTCC.
+          # This fixes:
+          #
+          # /usr/bin/as: unrecognized option '-EL'
+          #
+          # ========================================================
+
+          export HOSTCC="/usr/bin/gcc"
+          export HOSTCXX="/usr/bin/g++"
+          export HOSTLD="/usr/bin/ld"
+
+          echo
+          echo "=========================================="
+          echo "          TOOLCHAIN CONFIGURATION"
+          echo "=========================================="
+
+          echo "CC=$CC"
+          echo "LD=$LD"
+          echo "AR=$AR"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+
+          echo "HOSTCC=$HOSTCC"
+          echo "HOSTCXX=$HOSTCXX"
+          echo "HOSTLD=$HOSTLD"
+
+          echo
+          echo "========== HOST GCC =========="
+
+          "$HOSTCC" --version
+
+          echo
+          echo "========== CLANG =========="
+
+          "$CC" --version
+
+          echo
+          echo "========== LLD =========="
+
+          "$LD" --version
+
+
+      # ============================================================
+      # BUILD KERNEL
+      # ============================================================
+
+      - name: Build kernel
+        run: |
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export CLANG="$HOME/toolchains/clang/bin"
+          export GCC="$HOME/toolchains/gcc/bin"
+
+          export PATH="$CLANG:$GCC:$PATH"
+
+          export CROSS_COMPILE="$GCC/aarch64-linux-androidkernel-"
+
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          export CC="$CLANG/clang"
+          export LD="$CLANG/ld.lld"
+          export AR="$CLANG/llvm-ar"
+          export NM="$CLANG/llvm-nm"
+          export OBJCOPY="$CLANG/llvm-objcopy"
+          export OBJDUMP="$CLANG/llvm-objdump"
+          export STRIP="$CLANG/llvm-strip"
+
+          # HOST compiler
+          export HOSTCC="/usr/bin/gcc"
+          export HOSTCXX="/usr/bin/g++"
+          export HOSTLD="/usr/bin/ld"
 
           echo
           echo "=========================================="
           echo "       BUILDING CAMELLIA KERNEL"
           echo "=========================================="
 
+          echo
           echo "CC=$CC"
-          echo "HOSTCC=$HOSTCC"
-          echo "HOSTCXX=$HOSTCXX"
           echo "LD=$LD"
-          echo "HOSTLD=$HOSTLD"
           echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "HOSTCC=$HOSTCC"
+          echo "HOSTLD=$HOSTLD"
+
+          echo
+          echo "========== COMPILER =========="
+
+          "$CC" --version
 
           echo
           echo "========== HOST COMPILER =========="
@@ -443,42 +476,44 @@ jobs:
           "$HOSTCC" --version
 
           echo
-          echo "========== TARGET COMPILER =========="
-
-          "$CC" --version
-
-          echo
-          echo "========== BUILD =========="
+          echo "=========================================="
+          echo "              BUILD START"
+          echo "=========================================="
 
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
             CC="$CC" \
-            HOSTCC="$HOSTCC" \
-            HOSTCXX="$HOSTCXX" \
             LD="$LD" \
-            HOSTLD="$HOSTLD" \
             AR="$AR" \
             NM="$NM" \
             OBJCOPY="$OBJCOPY" \
             OBJDUMP="$OBJDUMP" \
             STRIP="$STRIP" \
+            HOSTCC="$HOSTCC" \
+            HOSTCXX="$HOSTCXX" \
+            HOSTLD="$HOSTLD" \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CLANG_TRIPLE="$CLANG_TRIPLE" \
             LLVM_IAS=1
 
 
-      # ==========================================================
-      # CHECK OUTPUT
-      # ==========================================================
+      # ============================================================
+      # CHECK KERNEL
+      # ============================================================
 
-      - name: Check kernel output
+      - name: Check kernel
         if: success()
         run: |
+
+          echo
           echo "=========================================="
           echo "             KERNEL OUTPUT"
           echo "=========================================="
+
+          echo
+          echo "========== BOOT FILES =========="
 
           find out/arch/arm64/boot \
             -maxdepth 2 \
@@ -489,13 +524,26 @@ jobs:
           echo "========== IMAGE =========="
 
           ls -lh \
-            out/arch/arm64/boot/Image* \
+            out/arch/arm64/boot/Image \
             2>/dev/null || true
 
+          echo
+          echo "========== IMAGE.GZ =========="
 
-      # ==========================================================
-      # UPLOAD
-      # ==========================================================
+          ls -lh \
+            out/arch/arm64/boot/Image.gz \
+            2>/dev/null || true
+
+          echo
+          echo "========== CONFIG =========="
+
+          ls -lh \
+            out/.config
+
+
+      # ============================================================
+      # UPLOAD ARTIFACT
+      # ============================================================
 
       - name: Upload kernel
         if: success()
@@ -507,3 +555,5 @@ jobs:
           path: |
             out/arch/arm64/boot/Image*
             out/.config
+
+          if-no-files-found: error
