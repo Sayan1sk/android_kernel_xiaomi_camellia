@@ -189,6 +189,29 @@ jobs:
           grep -n "integrated-as" arch/arm64/Makefile || true
 
       # ==============================
+      # PATCH VDSO MACRO COMMA (LLVM IAS)
+      # ==============================
+
+      - name: Patch VDSO gettimeofday.S macro-comma for LLVM IAS
+        run: |
+          echo "========== PATCHING VDSO MACRO CALLS =========="
+
+          VDSO_FILE="arch/arm64/kernel/vdso/gettimeofday.S"
+
+          echo "-- before patch --"
+          grep -n "clock_gettime_return, shift=1" "$VDSO_FILE" || true
+
+          # Clang's integrated assembler cannot parse a comma between a
+          # macro name and its arguments (GNU as accepts it, LLVM IAS
+          # does not). Remove the comma at each call site. See
+          # https://github.com/ClangBuiltLinux/linux/issues/1349
+          sed -i 's/clock_gettime_return, shift=1/clock_gettime_return shift=1/g' "$VDSO_FILE"
+
+          echo
+          echo "-- after patch --"
+          grep -n "clock_gettime_return shift=1" "$VDSO_FILE" || true
+
+      # ==============================
       # BUILD
       # ==============================
 
