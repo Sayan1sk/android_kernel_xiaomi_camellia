@@ -55,6 +55,7 @@ on:
         required: true
         type: boolean
 
+
 jobs:
   build:
     name: Build Camellia Kernel
@@ -62,19 +63,33 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
+
+      # ============================================================
+      # SHOW CONFIGURATION
+      # ============================================================
+
       - name: Show configuration
         run: |
-          echo "================================"
-          echo "Camellia Kernel Build"
-          echo "================================"
+          echo "=========================================="
+          echo "       CAMELLIA KERNEL BUILD"
+          echo "=========================================="
+          echo "Build target : ${{ inputs.build_target }}"
+          echo "KernelSU     : ${{ inputs.ksu_fork }}"
+          echo "Manifest     : ${{ inputs.manifest_name }}"
+          echo "Toolchain    : ${{ inputs.toolchain }}"
+          echo "=========================================="
 
-          echo "Build target: ${{ inputs.build_target }}"
-          echo "KernelSU: ${{ inputs.ksu_fork }}"
-          echo "Manifest: ${{ inputs.manifest_name }}"
-          echo "Toolchain: ${{ inputs.toolchain }}"
+
+      # ============================================================
+      # DEPENDENCIES
+      # ============================================================
 
       - name: Install dependencies
         run: |
@@ -96,6 +111,11 @@ jobs:
             wget \
             zip
 
+
+      # ============================================================
+      # ANDROID CLANG 11
+      # ============================================================
+
       - name: Download Android Clang
         run: |
           mkdir -p "$HOME/toolchains"
@@ -112,7 +132,14 @@ jobs:
             "$HOME/toolchains/clang-source/clang-r383902/." \
             "$HOME/toolchains/clang/"
 
+          echo "========== CLANG =========="
+
           "$HOME/toolchains/clang/bin/clang" --version
+
+
+      # ============================================================
+      # ANDROID GCC 4.9
+      # ============================================================
 
       - name: Download Android GCC 4.9
         run: |
@@ -122,8 +149,15 @@ jobs:
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
             "$HOME/toolchains/gcc"
 
+          echo "========== GCC =========="
+
           "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-gcc" \
             --version
+
+
+      # ============================================================
+      # KERNELSU NEXT
+      # ============================================================
 
       - name: Setup KernelSU Next
         if: inputs.ksu_fork == 'KSU-Next'
@@ -132,8 +166,14 @@ jobs:
             https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh \
             | bash -s legacy
 
+
+      # ============================================================
+      # CONFIGURE CAMELLIA
+      # ============================================================
+
       - name: Configure Camellia
         run: |
+
           export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
 
           make O=out \
@@ -151,23 +191,142 @@ jobs:
             ARCH=arm64 \
             olddefconfig
 
+          echo
           echo "========== KERNELSU =========="
+
           grep CONFIG_KSU out/.config || true
 
           echo
           echo "========== MILLET =========="
+
           grep CONFIG_MILLET out/.config || true
 
-      - name: Fix Clang integrated assembler
+
+      # ============================================================
+      # FIX 1
+      # CLANG INTEGRATED ASSEMBLER
+      # ============================================================
+
+      - name: Enable Clang Integrated Assembler
         run: |
-          sed -i \
-            's/-no-integrated-as/-integrated-as/g' \
-            Makefile
+
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+
+          echo "========== LLVM IAS =========="
 
           grep -n "integrated-as" Makefile || true
 
+          echo "LLVM_IAS=1 will be used during build."
+
+
+      # ============================================================
+      # FIX 2
+      # AES-MODES.S CLANG 11 FIX
+      # ============================================================
+
+      - name: Fix AES Clang assembler incompatibility
+        run: |
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("arch/arm64/crypto/aes-modes.S")
+          text = path.read_text()
+
+          old = """\\tldr\\tq8, =0x30000000200000001\\t/* addends 1,2,3[,0] */
+          \\tdup\\tv7.4s, w8
+          \\tmov\\tv0.16b, v4.16b
+          \\tadd\\tv7.4s, v7.4s, v8.4s
+          \\tmov\\tv1.16b, v4.16b
+          \\trev32\\tv8.16b, v7.16b
+          \\tmov\\tv2.16b, v4.16b
+          \\tmov\\tv3.16b, v4.16b
+          \\tmov\\tv1.s[3], v8.s[0]
+          \\tmov\\tv2.s[3], v8.s[1]
+          \\tmov\\tv3.s[3], v8.s[2]"""
+
+          new = """\\tadd\\tw7, w8, #1
+          \\tmov\\tv0.16b, v4.16b
+          \\tadd\\tw9, w8, #2
+          \\tmov\\tv1.16b, v4.16b
+          \\tadd\\tw10, w8, #3
+          \\tmov\\tv2.16b, v4.16b
+          \\tmov\\tv3.16b, v4.16b
+          \\trev\\tw7, w7
+          \\trev\\tw9, w9
+          \\trev\\tw10, w10
+          \\tmov\\tv1.s[3], w7
+          \\tmov\\tv2.s[3], w9
+          \\tmov\\tv3.s[3], w10"""
+
+          if old not in text:
+              print("Exact AES block not found.")
+              print("Trying fallback replacement...")
+
+              lines = text.splitlines()
+              start = None
+              end = None
+
+              for i, line in enumerate(lines):
+                  if "ldr" in line and "0x30000000200000001" in line:
+                      start = i
+                      break
+
+              if start is None:
+                  raise SystemExit(
+                      "FATAL: AES literal was not found."
+                  )
+
+              for i in range(start, min(start + 20, len(lines))):
+                  if "mov" in lines[i] and "v3.s[3]" in lines[i]:
+                      end = i
+                      break
+
+              if end is None:
+                  raise SystemExit(
+                      "FATAL: Could not locate end of AES block."
+                  )
+
+              replacement = new.splitlines()
+
+              lines[start:end + 1] = replacement
+              path.write_text("\n".join(lines) + "\n")
+
+          else:
+              path.write_text(
+                  text.replace(old, new, 1)
+              )
+
+          print("======================================")
+          print("AES Clang compatibility fix applied")
+          print("======================================")
+          PY
+
+          echo
+          echo "========== VERIFY AES FIX =========="
+
+          if grep -n \
+            "0x30000000200000001" \
+            arch/arm64/crypto/aes-modes.S
+          then
+            echo "ERROR: Old AES literal still exists!"
+            exit 1
+          fi
+
+          grep -n \
+            -A15 \
+            -B3 \
+            "add.*w7.*w8.*#1" \
+            arch/arm64/crypto/aes-modes.S || true
+
+
+      # ============================================================
+      # BUILD KERNEL
+      # ============================================================
+
       - name: Build kernel
         run: |
+
           export ARCH=arm64
           export SUBARCH=arm64
 
@@ -184,6 +343,11 @@ jobs:
           export OBJDUMP="$HOME/toolchains/clang/bin/llvm-objdump"
           export STRIP="$HOME/toolchains/clang/bin/llvm-strip"
 
+          echo
+          echo "=========================================="
+          echo "          BUILDING KERNEL"
+          echo "=========================================="
+
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
@@ -199,17 +363,40 @@ jobs:
             STRIP="$STRIP" \
             LLVM_IAS=1
 
+
+      # ============================================================
+      # CHECK OUTPUT
+      # ============================================================
+
       - name: Check kernel
+        if: success()
         run: |
-          echo "========== OUTPUT =========="
+
+          echo "=========================================="
+          echo "             KERNEL OUTPUT"
+          echo "=========================================="
 
           find out/arch/arm64/boot \
             -maxdepth 2 \
             -type f \
             -print
 
+          echo
+          echo "========== IMAGE =========="
+
+          ls -lh \
+            out/arch/arm64/boot/Image* \
+            2>/dev/null || true
+
+
+      # ============================================================
+      # UPLOAD ARTIFACT
+      # ============================================================
+
       - name: Upload kernel
+        if: success()
         uses: actions/upload-artifact@v4
+
         with:
           name: Camellia-KernelSU-Next
           path: |
