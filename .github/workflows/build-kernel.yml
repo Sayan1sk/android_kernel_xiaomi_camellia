@@ -1,139 +1,217 @@
-name: Build Kernel & Tools (Automated Pipeline)
+name: Kernel Build Worker
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       build_target:
-        description: 'Select Build Target'
         required: true
-        type: choice
-        default: 'both'
-        options:
-          - 'both'
-          - 'kernel_only'
-          - 'manager_only'
-      ksu_fork:
-        description: 'Select KernelSU Fork'
-        required: true
-        type: choice
-        default: 'xxKSU'
-        options:
-          - 'xxKSU'
-          - 'SUKISU'
-          - 'ReSuKISU'
-          - 'KSU-Next'
-          - 'Official'
-      manifest_name:
-        description: 'Select Manifest XML Device'
-        required: true
-        type: choice
-        options:
-          - lineage
-          - lotus-kernel
-          - camellia
-          - lotus-test
-          - vortex-v1
-          - vortex-test
-      include_susfs:
-        description: 'Include SUSFS (Kernel Anti-Detection)'
-        required: true
-        type: boolean
-        default: true
-      include_droidspace:
-        description: 'Enable DroidSpace & OverlayFS (Mountify / Magic Mount)'
-        required: true
-        type: boolean
-        default: true
-      include_bbg:
-        description: 'Include Baseband-Guard (BBG)'
-        required: true
-        type: boolean
-        default: true
-      include_lpud:
-        description: 'Build LPUD Daemon Binary (For xxKSU / SUKISU)'
-        required: true
-        type: boolean
-        default: true
-      toolchain:
-        description: 'Select Clang Toolchain'
-        required: true
-        type: choice
-        default: 'proton-clang'
-        options:
-          - 'proton-clang'
-          - 'aosp-clang'
-          - 'zyc-clang'
-          - 'azure-clang'
-          - 'eva-gcc'
+        type: string
 
-      # =========================================================================
-      # INDIVIDUAL KERNEL-SIDE FEATURE TOGGLES
-      # =========================================================================
+      ksu_fork:
+        required: true
+        type: string
+
+      manifest_name:
+        required: true
+        type: string
+
+      include_susfs:
+        required: true
+        type: boolean
+
+      include_droidspace:
+        required: true
+        type: boolean
+
+      include_bbg:
+        required: true
+        type: boolean
+
+      toolchain:
+        required: true
+        type: string
+
       include_lto_o3:
-        description: 'Enable ThinLTO & -O3 Compiler Optimizations'
         required: true
         type: boolean
-        default: true
+
       include_wireguard:
-        description: 'Inject WireGuard VPN Protocol'
         required: true
         type: boolean
-        default: true
+
       include_f2fs:
-        description: 'Inject F2FS Backport for 4.14'
         required: true
         type: boolean
-        default: true
+
       include_zstd:
-        description: 'Enable ZRAM ZSTD Compression'
         required: true
         type: boolean
-        default: true
+
       include_bbr:
-        description: 'Enable TCP BBR & Westwood Congestion Control'
         required: true
         type: boolean
-        default: true
+
       include_ttl:
-        description: 'Enable TTL / HL Packet Spoofing'
         required: true
         type: boolean
-        default: true
-        
-permissions:
-  contents: write
 
 jobs:
-  # -------------------------------------------------------------------------
-  # JOB 1: AUTOMATICALLY CALL WORKER KERNEL & MANAGER
-  # -------------------------------------------------------------------------
-  build-kernel-and-manager:
-    uses: ./.github/workflows/build-kernel.yml
-    with:
-      build_target: ${{ inputs.build_target }}
-      ksu_fork: ${{ inputs.ksu_fork }}
-      manifest_name: ${{ inputs.manifest_name }}
-      include_susfs: ${{ inputs.include_susfs }}
-      include_droidspace: ${{ inputs.include_droidspace }}
-      include_bbg: ${{ inputs.include_bbg }}
-      toolchain: ${{ inputs.toolchain }}
-      include_lto_o3: ${{ inputs.include_lto_o3 }}
-      include_wireguard: ${{ inputs.include_wireguard }}
-      include_f2fs: ${{ inputs.include_f2fs }}
-      include_zstd: ${{ inputs.include_zstd }}
-      include_bbr: ${{ inputs.include_bbr }}
-      include_ttl: ${{ inputs.include_ttl }}
-    secrets: inherit
+  build:
+    name: Build Camellia Kernel
+    runs-on: ubuntu-22.04
 
-  # -------------------------------------------------------------------------
-  # JOB 2: AUTOMATICALLY CALL LPUD WORKER
-  # -------------------------------------------------------------------------
-  build-lpud-binary:
-    needs: build-kernel-and-manager
-    if: inputs.include_lpud == true && (inputs.ksu_fork == 'xxKSU' || inputs.ksu_fork == 'SUKISU')
-    uses: ./.github/workflows/build-lpud.yml
-    with:
-      ksu_fork: ${{ inputs.ksu_fork }}
-      target_arch: 'aarch64-linux-android'
-    secrets: inherit
-    
+    steps:
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Show configuration
+        run: |
+          echo "================================"
+          echo "Camellia Kernel Build"
+          echo "================================"
+
+          echo "Build target: ${{ inputs.build_target }}"
+          echo "KernelSU: ${{ inputs.ksu_fork }}"
+          echo "Manifest: ${{ inputs.manifest_name }}"
+          echo "Toolchain: ${{ inputs.toolchain }}"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            lld \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            zip
+
+      - name: Download Android Clang
+        run: |
+          mkdir -p "$HOME/toolchains"
+
+          git clone \
+            --depth=1 \
+            --branch android12-release \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            "$HOME/toolchains/clang-source"
+
+          mkdir -p "$HOME/toolchains/clang"
+
+          cp -a \
+            "$HOME/toolchains/clang-source/clang-r383902/." \
+            "$HOME/toolchains/clang/"
+
+          "$HOME/toolchains/clang/bin/clang" --version
+
+      - name: Download Android GCC 4.9
+        run: |
+          git clone \
+            --depth=1 \
+            --branch android-7.1.2_r3 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            "$HOME/toolchains/gcc"
+
+          "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-gcc" \
+            --version
+
+      - name: Setup KernelSU Next
+        if: inputs.ksu_fork == 'KSU-Next'
+        run: |
+          curl -LSs \
+            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh \
+            | bash -s legacy
+
+      - name: Configure Camellia
+        run: |
+          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
+
+          make O=out \
+            ARCH=arm64 \
+            camellian_defconfig
+
+          ./scripts/config --file out/.config \
+            -e CONFIG_KSU \
+            -e CONFIG_KPROBES \
+            -e CONFIG_KPROBE_EVENTS \
+            -e CONFIG_KSU_KPROBE_HOOKS \
+            -d CONFIG_MILLET
+
+          make O=out \
+            ARCH=arm64 \
+            olddefconfig
+
+          echo "========== KERNELSU =========="
+          grep CONFIG_KSU out/.config || true
+
+          echo
+          echo "========== MILLET =========="
+          grep CONFIG_MILLET out/.config || true
+
+      - name: Fix Clang integrated assembler
+        run: |
+          sed -i \
+            's/-no-integrated-as/-integrated-as/g' \
+            Makefile
+
+          grep -n "integrated-as" Makefile || true
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
+
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-androidkernel-
+
+          export CC="$HOME/toolchains/clang/bin/clang"
+          export LD="$HOME/toolchains/clang/bin/ld.lld"
+          export AR="$HOME/toolchains/clang/bin/llvm-ar"
+          export NM="$HOME/toolchains/clang/bin/llvm-nm"
+          export OBJCOPY="$HOME/toolchains/clang/bin/llvm-objcopy"
+          export OBJDUMP="$HOME/toolchains/clang/bin/llvm-objdump"
+          export STRIP="$HOME/toolchains/clang/bin/llvm-strip"
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CLANG_TRIPLE="$CLANG_TRIPLE" \
+            CC="$CC" \
+            LD="$LD" \
+            AR="$AR" \
+            NM="$NM" \
+            OBJCOPY="$OBJCOPY" \
+            OBJDUMP="$OBJDUMP" \
+            STRIP="$STRIP" \
+            LLVM_IAS=1
+
+      - name: Check kernel
+        run: |
+          echo "========== OUTPUT =========="
+
+          find out/arch/arm64/boot \
+            -maxdepth 2 \
+            -type f \
+            -print
+
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Camellia-KernelSU-Next
+          path: |
+            out/arch/arm64/boot/Image*
+            out/.config
