@@ -1,339 +1,138 @@
-name: Camellia KernelSU Next
+name: Build Kernel & Tools (Automated Pipeline)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - lineage-23.2
+    inputs:
+      build_target:
+        description: 'Select Build Target'
+        required: true
+        type: choice
+        default: 'both'
+        options:
+          - 'both'
+          - 'kernel_only'
+          - 'manager_only'
+      ksu_fork:
+        description: 'Select KernelSU Fork'
+        required: true
+        type: choice
+        default: 'xxKSU'
+        options:
+          - 'xxKSU'
+          - 'SUKISU'
+          - 'ReSuKISU'
+          - 'KSU-Next'
+          - 'Official'
+      manifest_name:
+        description: 'Select Manifest XML Device'
+        required: true
+        type: choice
+        options:
+          - lineage
+          - lotus-kernel
+          - camellia
+          - lotus-test
+          - vortex-v1
+          - vortex-test
+      include_susfs:
+        description: 'Include SUSFS (Kernel Anti-Detection)'
+        required: true
+        type: boolean
+        default: true
+      include_droidspace:
+        description: 'Enable DroidSpace & OverlayFS (Mountify / Magic Mount)'
+        required: true
+        type: boolean
+        default: true
+      include_bbg:
+        description: 'Include Baseband-Guard (BBG)'
+        required: true
+        type: boolean
+        default: true
+      include_lpud:
+        description: 'Build LPUD Daemon Binary (For xxKSU / SUKISU)'
+        required: true
+        type: boolean
+        default: true
+      toolchain:
+        description: 'Select Clang Toolchain'
+        required: true
+        type: choice
+        default: 'proton-clang'
+        options:
+          - 'proton-clang'
+          - 'aosp-clang'
+          - 'zyc-clang'
+          - 'azure-clang'
+          - 'eva-gcc'
+
+      # =========================================================================
+      # INDIVIDUAL KERNEL-SIDE FEATURE TOGGLES
+      # =========================================================================
+      include_lto_o3:
+        description: 'Enable ThinLTO & -O3 Compiler Optimizations'
+        required: true
+        type: boolean
+        default: true
+      include_wireguard:
+        description: 'Inject WireGuard VPN Protocol'
+        required: true
+        type: boolean
+        default: true
+      include_f2fs:
+        description: 'Inject F2FS Backport for 4.14'
+        required: true
+        type: boolean
+        default: true
+      include_zstd:
+        description: 'Enable ZRAM ZSTD Compression'
+        required: true
+        type: boolean
+        default: true
+      include_bbr:
+        description: 'Enable TCP BBR & Westwood Congestion Control'
+        required: true
+        type: boolean
+        default: true
+      include_ttl:
+        description: 'Enable TTL / HL Packet Spoofing'
+        required: true
+        type: boolean
+        default: true
+        
+permissions:
+  contents: write
 
 jobs:
-  build:
-    name: Build Kernel
-    runs-on: ubuntu-22.04
-
-    steps:
-
-      # ==============================
-      # CHECKOUT
-      # ==============================
-
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      # ==============================
-      # DEPENDENCIES
-      # ==============================
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            curl \
-            device-tree-compiler \
-            flex \
-            git \
-            libelf-dev \
-            libssl-dev \
-            lld \
-            make \
-            python3 \
-            rsync \
-            unzip \
-            wget \
-            xz-utils \
-            zip
-
-      # ==============================
-      # CLANG R383902
-      # ==============================
-
-      - name: Download Android Clang r383902
-        run: |
-          mkdir -p "$HOME/toolchains"
-
-          git clone \
-            --depth=1 \
-            --branch android12-release \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            "$HOME/toolchains/clang-source"
-
-          mkdir -p "$HOME/toolchains/clang"
-
-          cp -a \
-            "$HOME/toolchains/clang-source/clang-r383902/." \
-            "$HOME/toolchains/clang/"
-
-          echo "========== CLANG =========="
-          "$HOME/toolchains/clang/bin/clang" --version
-
-      # ==============================
-      # GCC 4.9
-      # ==============================
-
-      - name: Download Android GCC 4.9
-        run: |
-          mkdir -p "$HOME/toolchains"
-
-          git clone \
-            --depth=1 \
-            --branch android-7.1.2_r3 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            "$HOME/toolchains/gcc"
-
-          echo "========== GCC =========="
-
-          "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-gcc" \
-            --version
-
-          echo
-          echo "========== GCC AS =========="
-
-          "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-as" \
-            --version
-
-      # ==============================
-      # TOOLCHAIN PATH
-      # ==============================
-
-      - name: Setup toolchain
-        run: |
-          echo "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
-          echo "$HOME/toolchains/gcc/bin" >> "$GITHUB_PATH"
-
-          echo "CLANG_PREBUILT_BIN=$HOME/toolchains/clang/bin" >> "$GITHUB_ENV"
-          echo "LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=$HOME/toolchains/gcc/bin" >> "$GITHUB_ENV"
-
-      # ==============================
-      # KERNELSU NEXT
-      # ==============================
-
-      - name: Integrate KernelSU Next
-        run: |
-          curl -LSs \
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
-            | bash -s legacy
-
-      # ==============================
-      # CONFIGURE
-      # ==============================
-
-      - name: Configure kernel
-        run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          make O=out ARCH=arm64 camellian_defconfig
-
-          ./scripts/config --file out/.config \
-            -e CONFIG_KSU \
-            -e CONFIG_KPROBES \
-            -e CONFIG_KPROBE_EVENTS \
-            -e CONFIG_KSU_KPROBE_HOOKS \
-            -d CONFIG_MILLET
-
-          make O=out ARCH=arm64 olddefconfig
-
-          echo
-          echo "========== KERNELSU CONFIG =========="
-
-          grep -E \
-            'CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_KPROBE_EVENTS=|CONFIG_KSU_KPROBE_HOOKS=|CONFIG_MILLET' \
-            out/.config || true
-
-      # ==============================
-      # CHECK XIAOMI MODULE
-      # ==============================
-
-      - name: Check Xiaomi MIHW source
-        run: |
-          echo "========== MIHW CHECK =========="
-
-          if [ -d "vendor/xiaomi/kernel_modules/mihw/millet" ]; then
-            echo "MIHW millet source FOUND."
-          else
-            echo "MIHW millet source NOT FOUND. CONFIG_MILLET has been disabled to compensate."
-
-            grep -Rni \
-              "kernel_modules/mihw/millet" \
-              --include="Makefile" \
-              --include="Kconfig" \
-              . || true
-          fi
-
-      # ==============================
-      # PATCH INTEGRATED ASSEMBLER
-      # ==============================
-
-      - name: Patch -no-integrated-as to integrated assembler
-        run: |
-          echo "========== PATCHING ASSEMBLER FLAG =========="
-
-          echo "-- files referencing no-integrated-as before patch --"
-          grep -Rl "no-integrated-as" --include="Makefile" . 2>/dev/null || true
-
-          sed -i 's/-no-integrated-as/-integrated-as/g' arch/arm64/Makefile
-
-          if [ -f Makefile ]; then
-            sed -i 's/-no-integrated-as/-integrated-as/g' Makefile
-          fi
-
-          echo
-          echo "========== VERIFY =========="
-          grep -n "integrated-as" arch/arm64/Makefile || true
-
-      # ==============================
-      # PATCH VDSO MACRO COMMA (LLVM IAS)
-      # ==============================
-
-      - name: Patch VDSO gettimeofday.S macro-comma for LLVM IAS
-        run: |
-          echo "========== PATCHING VDSO MACRO CALLS =========="
-
-          VDSO_FILE="arch/arm64/kernel/vdso/gettimeofday.S"
-
-          echo "-- before patch --"
-          grep -n "clock_gettime_return, shift=1" "$VDSO_FILE" || true
-
-          # Clang's integrated assembler cannot parse a comma between a
-          # macro name and its arguments (GNU as accepts it, LLVM IAS
-          # does not). Remove the comma at each call site. See
-          # https://github.com/ClangBuiltLinux/linux/issues/1349
-          sed -i 's/clock_gettime_return, shift=1/clock_gettime_return shift=1/g' "$VDSO_FILE"
-
-          echo
-          echo "-- after patch --"
-          grep -n "clock_gettime_return shift=1" "$VDSO_FILE" || true
-
-      # ==============================
-      # BUILD
-      # ==============================
-
-      - name: Build kernel
-        run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-androidkernel-
-
-          export CC=clang
-          export LD=ld.lld
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-
-          export CLANG_PREBUILT_BIN="$HOME/toolchains/clang/bin"
-          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$HOME/toolchains/gcc/bin"
-
-          export LD_LIBRARY_PATH="$HOME/toolchains/clang/lib64:$LD_LIBRARY_PATH"
-
-          echo "========== BUILD ENVIRONMENT =========="
-
-          echo "ARCH=$ARCH"
-          echo "CROSS_COMPILE=$CROSS_COMPILE"
-          echo "CLANG_TRIPLE=$CLANG_TRIPLE"
-          echo "CC=$CC"
-          echo "LD=$LD"
-          echo "LLVM_IAS=1"
-
-          echo
-          echo "========== CLANG =========="
-
-          which clang
-          clang --version
-
-          echo
-          echo "========== GCC =========="
-
-          which aarch64-linux-androidkernel-gcc
-          aarch64-linux-androidkernel-gcc --version
-
-          echo
-          echo "========== ASSEMBLER =========="
-
-          which aarch64-linux-androidkernel-as
-          aarch64-linux-androidkernel-as --version
-
-          echo
-          echo "========== BUILDING =========="
-
-          make -j"$(nproc)" \
-            O=out \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            CROSS_COMPILE="$CROSS_COMPILE" \
-            CLANG_TRIPLE="$CLANG_TRIPLE" \
-            CC="$CC" \
-            LD="$LD" \
-            NM="$NM" \
-            OBJCOPY="$OBJCOPY" \
-            LLVM_IAS=1
-
-      # ==============================
-      # CHECK OUTPUT
-      # ==============================
-
-      - name: Check kernel output
-        if: success()
-        run: |
-          echo "========== KERNEL OUTPUT =========="
-
-          find out/arch/arm64/boot \
-            -maxdepth 3 \
-            -type f \
-            -print | sort
-
-          echo
-          echo "========== IMAGE =========="
-
-          ls -lh \
-            out/arch/arm64/boot/Image \
-            out/arch/arm64/boot/Image.gz \
-            out/arch/arm64/boot/Image.gz-dtb \
-            2>/dev/null || true
-
-      # ==============================
-      # ARTIFACT
-      # ==============================
-
-      - name: Prepare artifact
-        if: success()
-        run: |
-          mkdir -p release
-
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb release/
-          fi
-
-          if [ -f out/arch/arm64/boot/Image.gz ]; then
-            cp out/arch/arm64/boot/Image.gz release/
-          fi
-
-          if [ -f out/arch/arm64/boot/Image ]; then
-            cp out/arch/arm64/boot/Image release/
-          fi
-
-          cp out/.config release/kernel.config
-
-          echo "========== ARTIFACT =========="
-          ls -lah release/
-
-      # ==============================
-      # UPLOAD
-      # ==============================
-
-      - name: Upload KernelSU kernel
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: camellia-kernelsu-next
-          path: release/
-          if-no-files-found: error
+  # -------------------------------------------------------------------------
+  # JOB 1: AUTOMATICALLY CALL WORKER KERNEL & MANAGER
+  # -------------------------------------------------------------------------
+  build-kernel-and-manager:
+    uses: ./.github/workflows/build-kernel.yml
+    with:
+      build_target: ${{ inputs.build_target }}
+      ksu_fork: ${{ inputs.ksu_fork }}
+      manifest_name: ${{ inputs.manifest_name }}
+      include_susfs: ${{ inputs.include_susfs }}
+      include_droidspace: ${{ inputs.include_droidspace }}
+      include_bbg: ${{ inputs.include_bbg }}
+      toolchain: ${{ inputs.toolchain }}
+      include_lto_o3: ${{ inputs.include_lto_o3 }}
+      include_wireguard: ${{ inputs.include_wireguard }}
+      include_f2fs: ${{ inputs.include_f2fs }}
+      include_zstd: ${{ inputs.include_zstd }}
+      include_bbr: ${{ inputs.include_bbr }}
+      include_ttl: ${{ inputs.include_ttl }}
+    secrets: inherit
+
+  # -------------------------------------------------------------------------
+  # JOB 2: AUTOMATICALLY CALL LPUD WORKER
+  # -------------------------------------------------------------------------
+  build-lpud-binary:
+    needs: build-kernel-and-manager
+    if: inputs.include_lpud == true && (inputs.ksu_fork == 'xxKSU' || inputs.ksu_fork == 'SUKISU')
+    uses: ./.github/workflows/build-lpud.yml
+    with:
+      ksu_fork: ${{ inputs.ksu_fork }}
+      target_arch: 'aarch64-linux-android'
+    secrets: inherit
