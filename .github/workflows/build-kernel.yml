@@ -55,7 +55,6 @@ on:
         required: true
         type: boolean
 
-
 jobs:
   build:
     name: Build Camellia Kernel
@@ -72,7 +71,7 @@ jobs:
 
 
       # ==========================================================
-      # SHOW CONFIGURATION
+      # CONFIGURATION
       # ==========================================================
 
       - name: Show configuration
@@ -178,13 +177,24 @@ jobs:
 
           export PATH="$CLANG:$GCC:$PATH"
 
+          echo "=========================================="
+          echo "           TOOLCHAIN CHECK"
+          echo "=========================================="
+
+          echo
           echo "========== CLANG =========="
 
           which clang
           clang --version
 
           echo
-          echo "========== GCC =========="
+          echo "========== CLANG++ =========="
+
+          which clang++
+          clang++ --version
+
+          echo
+          echo "========== GCC CROSS =========="
 
           which aarch64-linux-androidkernel-gcc
           aarch64-linux-androidkernel-gcc --version
@@ -195,6 +205,7 @@ jobs:
           cat > /tmp/test.S <<'EOF'
           .text
           .global test_function
+
           test_function:
               mov x0, x0
               ret
@@ -229,15 +240,21 @@ jobs:
 
       - name: Configure Camellia
         run: |
-          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
+          export CLANG="$HOME/toolchains/clang/bin"
+          export GCC="$HOME/toolchains/gcc/bin"
 
-          echo "========== CAMELLIA DEFCONFIG =========="
+          export PATH="$CLANG:$GCC:$PATH"
+
+          echo "=========================================="
+          echo "       CONFIGURE CAMELLIA"
+          echo "=========================================="
 
           make O=out \
             ARCH=arm64 \
             camellian_defconfig
 
-          echo "========== KERNELSU CONFIG =========="
+          echo
+          echo "========== ENABLE KERNELSU =========="
 
           ./scripts/config --file out/.config \
             -e CONFIG_KSU \
@@ -245,6 +262,7 @@ jobs:
             -e CONFIG_KPROBE_EVENTS \
             -e CONFIG_KSU_KPROBE_HOOKS
 
+          echo
           echo "========== DISABLE MILLET =========="
 
           ./scripts/config --file out/.config \
@@ -255,7 +273,7 @@ jobs:
             olddefconfig
 
           echo
-          echo "========== KSU =========="
+          echo "========== KERNELSU =========="
 
           grep CONFIG_KSU out/.config || true
 
@@ -266,15 +284,16 @@ jobs:
 
 
       # ==========================================================
-      # FIX VDSO
+      # VDSO FIX
       # ==========================================================
 
-      - name: Fix VDSO Clang 11 compatibility
+      - name: Fix VDSO Clang compatibility
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path("arch/arm64/kernel/vdso/gettimeofday.S")
+
           text = path.read_text()
 
           old = "clock_gettime_return, shift=1"
@@ -282,27 +301,28 @@ jobs:
 
           count = text.count(old)
 
-          print("VDSO occurrences:", count)
+          print("Found:", count, "VDSO occurrences")
 
           if count:
-              path.write_text(text.replace(old, new))
-
+              text = text.replace(old, new)
+              path.write_text(text)
               print("VDSO fix applied.")
           else:
-              print("VDSO fix already applied or source differs.")
+              print("VDSO fix not required.")
           PY
 
 
       # ==========================================================
-      # FIX AES
+      # AES FIX
       # ==========================================================
 
-      - name: Fix AES Clang 11 compatibility
+      - name: Fix AES Clang compatibility
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path("arch/arm64/crypto/aes-modes.S")
+
           lines = path.read_text().splitlines()
 
           target = "0x30000000200000001"
@@ -316,7 +336,8 @@ jobs:
                   break
 
           if start is None:
-              print("AES literal already fixed or not present.")
+              print("AES literal not found.")
+              print("AES fix is probably already applied.")
               raise SystemExit(0)
 
           for i in range(start, min(start + 20, len(lines))):
@@ -326,7 +347,7 @@ jobs:
 
           if end is None:
               raise SystemExit(
-                  "ERROR: Could not find AES block end."
+                  "ERROR: Could not locate AES block."
               )
 
           replacement = [
@@ -354,16 +375,17 @@ jobs:
           print("AES Clang fix applied.")
           PY
 
+          echo
           echo "========== VERIFY AES =========="
 
           if grep -q "0x30000000200000001" \
             arch/arm64/crypto/aes-modes.S
           then
-            echo "ERROR: AES literal still exists."
+            echo "ERROR: Old AES literal still exists."
             exit 1
           fi
 
-          echo "AES literal removed."
+          echo "AES fix verified."
 
 
       # ==========================================================
@@ -380,10 +402,16 @@ jobs:
 
           export PATH="$CLANG:$GCC:$PATH"
 
+          # ARM64 target cross compiler
           export CROSS_COMPILE="$GCC/aarch64-linux-androidkernel-"
+
+          # Clang target
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
+          # Target compiler
           export CC="$CLANG/clang"
+
+          # Target linker/tools
           export LD="$CLANG/ld.lld"
           export AR="$CLANG/llvm-ar"
           export NM="$CLANG/llvm-nm"
@@ -391,14 +419,31 @@ jobs:
           export OBJDUMP="$CLANG/llvm-objdump"
           export STRIP="$CLANG/llvm-strip"
 
+          # IMPORTANT:
+          # Host tools must NOT use Android GCC 4.9.
+          export HOSTCC="$CLANG/clang"
+          export HOSTCXX="$CLANG/clang++"
+          export HOSTLD="$CLANG/ld.lld"
+
           echo
           echo "=========================================="
           echo "       BUILDING CAMELLIA KERNEL"
           echo "=========================================="
 
           echo "CC=$CC"
+          echo "HOSTCC=$HOSTCC"
+          echo "HOSTCXX=$HOSTCXX"
           echo "LD=$LD"
+          echo "HOSTLD=$HOSTLD"
           echo "CROSS_COMPILE=$CROSS_COMPILE"
+
+          echo
+          echo "========== HOST COMPILER =========="
+
+          "$HOSTCC" --version
+
+          echo
+          echo "========== TARGET COMPILER =========="
 
           "$CC" --version
 
@@ -409,10 +454,19 @@ jobs:
             O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            CC="$CC" \
+            HOSTCC="$HOSTCC" \
+            HOSTCXX="$HOSTCXX" \
+            LD="$LD" \
+            HOSTLD="$HOSTLD" \
+            AR="$AR" \
+            NM="$NM" \
+            OBJCOPY="$OBJCOPY" \
+            OBJDUMP="$OBJDUMP" \
+            STRIP="$STRIP" \
             CROSS_COMPILE="$CROSS_COMPILE" \
-            CLANG_TRIPLE="$CLANG_TRIPLE"
+            CLANG_TRIPLE="$CLANG_TRIPLE" \
+            LLVM_IAS=1
 
 
       # ==========================================================
@@ -435,7 +489,8 @@ jobs:
           echo "========== IMAGE =========="
 
           ls -lh \
-            out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/Image* \
+            2>/dev/null || true
 
 
       # ==========================================================
