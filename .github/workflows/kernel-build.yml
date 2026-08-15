@@ -13,18 +13,18 @@ jobs:
 
     steps:
 
-      # ==============================
+      # ==========================================
       # CHECKOUT
-      # ==============================
+      # ==========================================
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # ==============================
+      # ==========================================
       # DEPENDENCIES
-      # ==============================
+      # ==========================================
 
       - name: Install dependencies
         run: |
@@ -35,6 +35,7 @@ jobs:
             bison \
             build-essential \
             ccache \
+            ca-certificates \
             curl \
             device-tree-compiler \
             flex \
@@ -50,9 +51,9 @@ jobs:
             xz-utils \
             zip
 
-      # ==============================
-      # CLANG R383902
-      # ==============================
+      # ==========================================
+      # ANDROID CLANG R383902
+      # ==========================================
 
       - name: Download Android Clang r383902
         run: |
@@ -71,11 +72,12 @@ jobs:
             "$HOME/toolchains/clang/"
 
           echo "========== CLANG =========="
+
           "$HOME/toolchains/clang/bin/clang" --version
 
-      # ==============================
-      # GCC 4.9
-      # ==============================
+      # ==========================================
+      # ANDROID GCC 4.9
+      # ==========================================
 
       - name: Download Android GCC 4.9
         run: |
@@ -98,9 +100,9 @@ jobs:
           "$HOME/toolchains/gcc/bin/aarch64-linux-androidkernel-as" \
             --version
 
-      # ==============================
+      # ==========================================
       # TOOLCHAIN PATH
-      # ==============================
+      # ==========================================
 
       - name: Setup toolchain
         run: |
@@ -108,11 +110,12 @@ jobs:
           echo "$HOME/toolchains/gcc/bin" >> "$GITHUB_PATH"
 
           echo "CLANG_PREBUILT_BIN=$HOME/toolchains/clang/bin" >> "$GITHUB_ENV"
+
           echo "LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=$HOME/toolchains/gcc/bin" >> "$GITHUB_ENV"
 
-      # ==============================
+      # ==========================================
       # KERNELSU NEXT
-      # ==============================
+      # ==========================================
 
       - name: Integrate KernelSU Next
         run: |
@@ -120,16 +123,23 @@ jobs:
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
             | bash -s legacy
 
-      # ==============================
-      # CONFIGURE
-      # ==============================
+      # ==========================================
+      # CONFIGURE KERNEL
+      # ==========================================
 
       - name: Configure kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
 
-          make O=out ARCH=arm64 camellian_defconfig
+          echo "========== DEFCONFIG =========="
+
+          make O=out \
+            ARCH=arm64 \
+            camellian_defconfig
+
+          echo
+          echo "========== ENABLE KERNELSU =========="
 
           ./scripts/config --file out/.config \
             -e CONFIG_KSU \
@@ -137,68 +147,75 @@ jobs:
             -e CONFIG_KPROBE_EVENTS \
             -e CONFIG_KSU_KPROBE_HOOKS
 
-          make O=out ARCH=arm64 olddefconfig
+          echo
+          echo "========== DISABLE MISSING MILLET MODULE =========="
+
+          ./scripts/config --file out/.config \
+            -d CONFIG_MILLET || true
+
+          make O=out \
+            ARCH=arm64 \
+            olddefconfig
 
           echo
-          echo "========== KERNELSU CONFIG =========="
+          echo "========== FINAL CONFIG =========="
 
           grep -E \
-            'CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_KPROBE_EVENTS=|CONFIG_KSU_KPROBE_HOOKS=' \
+            'CONFIG_KSU=|CONFIG_KPROBES=|CONFIG_KPROBE_EVENTS=|CONFIG_KSU_KPROBE_HOOKS=|CONFIG_MILLET=' \
             out/.config || true
 
-      # ==============================
-      # CHECK XIAOMI MODULE
-      # ==============================
+      # ==========================================
+      # CHECK MILLET SOURCE
+      # ==========================================
 
-      - name: Check Xiaomi MIHW source
+      - name: Check Xiaomi MIHW
         run: |
-          echo "========== MIHW CHECK =========="
+          echo "========== MILLET SOURCE =========="
 
           if [ -d "vendor/xiaomi/kernel_modules/mihw/millet" ]; then
             echo "MIHW millet source FOUND."
           else
             echo "MIHW millet source NOT FOUND."
-
-            grep -Rni \
-              "kernel_modules/mihw/millet" \
-              --include="Makefile" \
-              --include="Kconfig" \
-              . || true
+            echo "CONFIG_MILLET has been disabled."
           fi
 
-      # ==============================
-      # BUILD
-      # ==============================
+      # ==========================================
+      # FIX OLD CLANG ASSEMBLER
+      # ==========================================
 
-      - name: Build kernel
+      - name: Enable Clang integrated assembler
         run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
+          echo "========== BEFORE PATCH =========="
 
-          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-androidkernel-
-
-          export CC=clang
-          export LD=ld.lld
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-
-          export CLANG_PREBUILT_BIN="$HOME/toolchains/clang/bin"
-          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$HOME/toolchains/gcc/bin"
-
-          export LD_LIBRARY_PATH="$HOME/toolchains/clang/lib64:$LD_LIBRARY_PATH"
-
-          echo "========== BUILD ENVIRONMENT =========="
-
-          echo "ARCH=$ARCH"
-          echo "CROSS_COMPILE=$CROSS_COMPILE"
-          echo "CLANG_TRIPLE=$CLANG_TRIPLE"
-          echo "CC=$CC"
-          echo "LD=$LD"
+          grep -n \
+            "integrated-as" \
+            Makefile || true
 
           echo
+          echo "========== PATCH =========="
+
+          sed -i \
+            's/-no-integrated-as/-integrated-as/g' \
+            Makefile
+
+          echo
+          echo "========== AFTER PATCH =========="
+
+          grep -n \
+            "integrated-as" \
+            Makefile || true
+
+          echo
+          echo "The old 4.14 tree is now forced to use Clang's integrated assembler."
+
+      # ==========================================
+      # VERIFY TOOLCHAIN
+      # ==========================================
+
+      - name: Verify build environment
+        run: |
+          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
+
           echo "========== CLANG =========="
 
           which clang
@@ -211,13 +228,67 @@ jobs:
           aarch64-linux-androidkernel-gcc --version
 
           echo
-          echo "========== ASSEMBLER =========="
+          echo "========== AS =========="
 
           which aarch64-linux-androidkernel-as
           aarch64-linux-androidkernel-as --version
 
           echo
-          echo "========== BUILDING =========="
+          echo "========== CONFIG =========="
+
+          grep -E \
+            'CONFIG_KSU=|CONFIG_MILLET=' \
+            out/.config || true
+
+      # ==========================================
+      # BUILD KERNEL
+      # ==========================================
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/gcc/bin:$PATH"
+
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-androidkernel-
+
+          export CC="$HOME/toolchains/clang/bin/clang"
+          export LD="$HOME/toolchains/clang/bin/ld.lld"
+          export NM="$HOME/toolchains/clang/bin/llvm-nm"
+          export AR="$HOME/toolchains/clang/bin/llvm-ar"
+          export OBJCOPY="$HOME/toolchains/clang/bin/llvm-objcopy"
+          export OBJDUMP="$HOME/toolchains/clang/bin/llvm-objdump"
+          export STRIP="$HOME/toolchains/clang/bin/llvm-strip"
+
+          export CLANG_PREBUILT_BIN="$HOME/toolchains/clang/bin"
+
+          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN="$HOME/toolchains/gcc/bin"
+
+          export LD_LIBRARY_PATH="$HOME/toolchains/clang/lib64:$LD_LIBRARY_PATH"
+
+          echo "========== BUILD ENVIRONMENT =========="
+
+          echo "ARCH=$ARCH"
+          echo "SUBARCH=$SUBARCH"
+          echo "CLANG_TRIPLE=$CLANG_TRIPLE"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "CC=$CC"
+          echo "LD=$LD"
+
+          echo
+          echo "========== KERNELSU =========="
+
+          grep CONFIG_KSU out/.config || true
+
+          echo
+          echo "========== MILLET =========="
+
+          grep CONFIG_MILLET out/.config || true
+
+          echo
+          echo "========== BUILD =========="
 
           make -j"$(nproc)" \
             O=out \
@@ -227,12 +298,16 @@ jobs:
             CLANG_TRIPLE="$CLANG_TRIPLE" \
             CC="$CC" \
             LD="$LD" \
+            AR="$AR" \
             NM="$NM" \
-            OBJCOPY="$OBJCOPY"
+            OBJCOPY="$OBJCOPY" \
+            OBJDUMP="$OBJDUMP" \
+            STRIP="$STRIP" \
+            LLVM_IAS=1
 
-      # ==============================
+      # ==========================================
       # CHECK OUTPUT
-      # ==============================
+      # ==========================================
 
       - name: Check kernel output
         if: success()
@@ -245,7 +320,7 @@ jobs:
             -print | sort
 
           echo
-          echo "========== IMAGE =========="
+          echo "========== KERNEL IMAGES =========="
 
           ls -lh \
             out/arch/arm64/boot/Image \
@@ -253,35 +328,45 @@ jobs:
             out/arch/arm64/boot/Image.gz-dtb \
             2>/dev/null || true
 
-      # ==============================
-      # ARTIFACT
-      # ==============================
+      # ==========================================
+      # PREPARE ARTIFACT
+      # ==========================================
 
-      - name: Prepare artifact
+      - name: Prepare kernel artifact
         if: success()
         run: |
           mkdir -p release
 
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb release/
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image \
+              release/Image
           fi
 
           if [ -f out/arch/arm64/boot/Image.gz ]; then
-            cp out/arch/arm64/boot/Image.gz release/
+            cp out/arch/arm64/boot/Image.gz \
+              release/Image.gz
           fi
 
-          if [ -f out/arch/arm64/boot/Image ]; then
-            cp out/arch/arm64/boot/Image release/
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb \
+              release/Image.gz-dtb
           fi
 
-          cp out/.config release/kernel.config
+          if [ -f out/vmlinux ]; then
+            cp out/vmlinux \
+              release/vmlinux
+          fi
 
-          echo "========== ARTIFACT =========="
+          cp out/.config \
+            release/kernel.config
+
+          echo "========== RELEASE FILES =========="
+
           ls -lah release/
 
-      # ==============================
+      # ==========================================
       # UPLOAD
-      # ==============================
+      # ==========================================
 
       - name: Upload KernelSU kernel
         if: success()
